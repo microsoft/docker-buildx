@@ -1,0 +1,16 @@
+Bad flag & short usage text.
+
+;-Qh
+
+<blah
+
+>docker-buildx: unknown option: -Q
+>
+>Usage: docker-buildx [options...] <path>
+>Docker-like Basic Options:
+>[...]
+>Additional Options:
+>[...]
+>Meta-options for (--help for more info):
+>[...]
+>Use --help for full details.

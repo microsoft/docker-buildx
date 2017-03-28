@@ -1,0 +1,62 @@
+Meta instructions, skip generation when block is empty.
+
+<line1
+<#BUILD#
+<line2
+<#META# foo \
+<  x y z
+<#META# bar
+<
+<#META# baz
+<line3
+
+>#!/usr/bin/env bash
+>
+>export DOCKERDIR="." DOCKERFILE="Dockerfile" BUILDXFILE="Dockerfilex" BUILDXTAG="0buildx-temp"
+>DOCKERBUILD() {
+>  echo "BUILDX---> docker build $*"
+>  docker build "$@" || exit $?; }
+>
+>if [[ ! "$(docker version)" =~ .*Experimental:\ *true.* ]]; then
+>  echo "Warning: docker experimental mode is off" 1>&2; fi
+>if [[ "$(docker images -q "$BUILDXTAG")" != "" ]]; then
+>  echo "Error: temp tag exists: $BUILDXTAG" 1>&2; exit 1; fi
+>
+>echo "################ >>> building fragment #1 <<< ################"
+>echo -n > "$BUILDXFILE"
+>cat >> "$BUILDXFILE" <<"EOF"
+>line1
+>EOF
+>
+>DOCKERBUILD \
+>  --tag "$BUILDXTAG" --file "$BUILDXFILE" "$DOCKERDIR"
+>rm -f "$BUILDXFILE"
+>
+>
+>echo ""
+>echo "################ >>> building fragment #2 <<< ################"
+>echo -n > "$BUILDXFILE"
+>echo "FROM $BUILDXTAG" >> "$BUILDXFILE"
+>cat >> "$BUILDXFILE" <<"EOF"
+>line2
+>EOF
+>{
+>  foo \
+>  x y z
+>  bar
+>} >> "$BUILDXFILE" || exit $?
+>cat >> "$BUILDXFILE" <<"EOF"
+>
+>EOF
+>{
+>  baz
+>} >> "$BUILDXFILE" || exit $?
+>cat >> "$BUILDXFILE" <<"EOF"
+>line3
+>EOF
+>
+>DOCKERBUILD \
+>  --file "$BUILDXFILE" "$DOCKERDIR"
+>rm -f "$BUILDXFILE"
+>
+>docker rmi "$BUILDXTAG"

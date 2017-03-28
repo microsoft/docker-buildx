@@ -1,0 +1,71 @@
+Buildx flags.
+
+;-XF SomeOtherFile -T SomeOtherTag
+
+<FROM ubuntu
+<
+<ENV USER=foo HOME=/home/foo
+<
+<RUN useradd -c Blah -U -G root -d "$HOME" -m "$USER"
+<
+<WORKDIR "$HOME"
+<
+<RUN echo xxxxxxxxxxxxxxx > x
+<RUN x() { cat x x x x x x x x x x x x x x x x > xx; mv xx x; ls -lh x; } \
+<    && x && x && x && x && x
+<
+<RUN chown $USER:$USER x
+<
+<#SQUASH#
+<
+<USER "$USER:$USER"
+
+>#!/usr/bin/env bash
+>
+>export DOCKERDIR="." DOCKERFILE="Dockerfile" BUILDXFILE="SomeOtherFile" BUILDXTAG="SomeOtherTag"
+>DOCKERBUILD() {
+>  echo "BUILDX---> docker build $*"
+>  docker build "$@" || exit $?; }
+>
+>if [[ ! "$(docker version)" =~ .*Experimental:\ *true.* ]]; then
+>  echo "Warning: docker experimental mode is off" 1>&2; fi
+>
+>echo "################ >>> building fragment #1 <<< ################"
+>echo -n > "$BUILDXFILE"
+>cat >> "$BUILDXFILE" <<"EOF"
+>FROM ubuntu
+>
+>ENV USER=foo HOME=/home/foo
+>
+>RUN useradd -c Blah -U -G root -d "$HOME" -m "$USER"
+>
+>WORKDIR "$HOME"
+>
+>RUN echo xxxxxxxxxxxxxxx > x
+>RUN x() { cat x x x x x x x x x x x x x x x x > xx; mv xx x; ls -lh x; } \
+>    && x && x && x && x && x
+>
+>RUN chown $USER:$USER x
+>
+>EOF
+>
+>DOCKERBUILD \
+>  --squash \
+>  --tag "$BUILDXTAG" --file "$BUILDXFILE" "$DOCKERDIR"
+>rm -f "$BUILDXFILE"
+>
+>
+>echo ""
+>echo "################ >>> building fragment #2 <<< ################"
+>echo -n > "$BUILDXFILE"
+>echo "FROM $BUILDXTAG" >> "$BUILDXFILE"
+>cat >> "$BUILDXFILE" <<"EOF"
+>
+>USER "$USER:$USER"
+>EOF
+>
+>DOCKERBUILD \
+>  --file "$BUILDXFILE" "$DOCKERDIR"
+>rm -f "$BUILDXFILE"
+>
+>docker rmi "$BUILDXTAG"

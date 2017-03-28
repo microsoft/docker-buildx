@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+
+cd "$(dirname $0)"
+
+verbose=0 vbuf=""; if [[ "$1" == "-v" ]]; then verbose=2; shift; fi
+vecho() {
+  if [[ "$1" == "+" ]]; then
+    shift; if ((!verbose)); then verbose=1; echo -n "$vbuf"; fi
+  fi
+  if ((verbose)); then echo "$@";
+  else local x="$(echo "$@"; printf "x")"; vbuf+="${x%x}"; fi
+}
+
+rxquote() { # str
+  str="$1"; shift
+  for ch in \\ \. \* \? \+ \^ \$ \( \) \| \[ \] \{ \}; do
+    str="${str//"$ch"/\\$ch}"
+  done
+  echo "${str//\\\[\\.\\.\\.\\\]/.*}"
+}
+
+show_part() { # file pfx
+  local file="$1" pfx="$2"; shift 2
+  grep "^$pfx" "$file" | sed -e "s/^$pfx//"
+}
+
+ntests=0 nfails=0
+if [[ "$#" == "0" ]]; then tests=(t[0-9][0-9]); else tests=("$@"); fi
+for t in "${tests[@]}"; do
+  vecho -n "Test $t..."
+  expect="$(show_part "$t" ">")"
+  expectrx="^$(rxquote "$expect")\$"
+  args="$(show_part "$t" ";")"
+  if [[ "$args" == *$'\n'* ]]; then
+    vecho + " bad test: multiple args line" 1>&2; exit 1;
+  fi
+  ((ntests++))
+  show_part "$t" "<" > "Dockerfile"
+  script="$(../docker-buildx --script . $args 2>&1)"
+  rm -f "Dockerfile"
+  if [[ "$script" =~ $expectrx ]]; then vecho " pass"; continue; fi
+  vecho + " fail"; ((nfails++))
+  if ((verbose > 1)); then
+    vecho "Expected:"; vecho "  | ${expect//$'\n'/$'\n  | '}"
+    vecho "Actual:";   vecho "  | ${script//$'\n'/$'\n  | '}"
+  fi
+done
+
+if ((!nfails)); then echo "$ntests tests passed"
+else echo "$nfails/$ntests tests failed"; exit 1; fi

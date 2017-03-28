@@ -1,0 +1,361 @@
+#!/usr/bin/env bash
+
+NAME="$(basename $0)"
+DIR="."  FILE="" # dockerfile path & file
+FILEx="" TAGx="" # dockerfile for fragments, tag for intermediate steps
+SCRIPT_MODE=0
+FORCE_MODE=0
+
+fail() { # [-h] message...
+  local help=0; if [[ "x$1" == "x-h" ]]; then help=1; shift; fi
+  echo "$NAME: $*" 1>&2
+  if ((help)); then echo ""; usage; fi
+  exit 1
+}
+
+echos() { # [-pfx str] line...
+  local pfx=""
+  if [[ "x$1" == "x-pfx" ]]; then pfx="$2"; shift 2; fi
+  for line; do printf "%s%s\n" "${line:+$pfx}" "$line"; done
+}
+
+trim() { # [-l|-r] str
+  local mode="x"; if [[ "x$1" == "x-"[lr] ]]; then mode="${1:1}"; shift; fi
+  str="$1"
+  if [[ "$mode" != "r" ]]; then str="${str#"${str%%[![:space:]]*}"}"; fi
+  if [[ "$mode" != "l" ]]; then str="${str%"${str##[![:space:]]*}"}"; fi
+  printf "%s" "$str"
+}
+
+qstr() { # str...; quotes the input as a shell string, using $HOME
+  local replace='\ " ` $' str="$*" ch
+  for ch in $replace; do str="${str//"$ch"/\\$ch}"; done
+  echo "\"${str//$HOME/\$HOME}\""
+}
+
+is_cont() { # str
+  if [[ "$1" =~ ([^\\]|^)(\\\\)*\\$ ]]; then return 0; else return 1; fi
+}
+
+usage() { # show_all
+  local all=0; if [[ "$1" == [Yy]* ]]; then all=1; fi; shift
+  echo "Usage: $NAME [options...] <path>"
+  if ((all)); then
+    echos -pfx "  " "" \
+      "$NAME is a tool to run a docker build in multiple steps, based on" \
+      "annotations in the dockerfile, allowing you to selectively squash" \
+      "parts of the build and more.  This is done by chopping the dockerfile" \
+      "into multiple files based on \"meta-annotations\", and each fragment" \
+      "is built with a tag that gets used by the following fragment's FROM" \
+      "line (which gets added to all fragments except the first)." "" \
+      "The following annotations are recognized:" "" \
+      "* #BUILD# [options...]" \
+      "  Run a build from the last #BUILD# (or the beginning of the file) to" \
+      "  this point, using the given options.  The specified options (if any)" \
+      "  are used for this run, combined with options set on the command-line" \
+      "  (see below).  Note that --tag, --file, and <path> are also added to" \
+      "  orchestrate the build, specifying the tag to use by the next step," \
+      "  the created dockerfile, and the path." "" \
+      "* #SQUASH#" \
+      "  This is a convenient shorthand for \"#BUILD# --squash\", the main" \
+      "  use-case of $NAME.  Remember that the build starts from the last" \
+      "  \"#BUILD#\" (or \"#SQUASH#\").  Squashing can be used to resolve" \
+      "  docker's inability to create files belonging to a non-root user, or" \
+      "  eliminate files holding temporary secrets -- with $NAME you can do" \
+      "  the following:" "" \
+      "    #BUILD#" \
+      "    USER root:root" \
+      "    ADD [\"stuff\", \"secret\", \"some/where\"]" \
+      "    RUN chown -R user:user some/where" \
+      "    USER user:user" \
+      "    RUN do-something-using some/where/secret" \
+      "    RUN rm some/where/secret" \
+      "    #SQUASH#" "" \
+      "  Note, however, that squashing preserves layer information, only the" \
+      "  contents is combined into a single layer.  Specifically, the" \
+      "  descriptions of all steps (e.g., as seen by \"docker history\") is" \
+      "  retained.  You should therefore still avoid commands that include" \
+      "  explicit secrets.  For example, copy file containing a secret as in" \
+      "  the above example, rather than some \"RUN something p455w0rd\"." "" \
+      "* #INCLUDE# <file/glob>" \
+      "  Include the specified file(s) at this point.  The arguments are as" \
+      "  in bash: you can include multiple files with a wildcard, use" \
+      "  variables, etc.  Use quotes or a backslash for spaces.  Paths are" \
+      "  taken as relative to the including file; includes can be nested." "" \
+      "* #META# command..." \
+      "  Run the specified command(s), and include the resulting output in" \
+      "  the dockerfile.  The output must contain plain dockerfile code.  For" \
+      "  example, you can include a fragment with a \"#META# cat some-file\"" \
+      "  (this will be simple inclusion, no meta annotations so no nested" \
+      "  includes).  The META code gets evaluated in a context that has some" \
+      "  environment variables set:" \
+      "  - \$DOCKERDIR:  the directory we're working in (the <path> argument)" \
+      "  - \$DOCKERFILE: the original dockerfile name (-f)" \
+      "  - \$BUILDXFILE: the temp fragment dockerfile name (-F)" \
+      "  - \$BUILDXTAG:  the temp tagname referring to the last build (-T)" \
+      "  - DOCKERBUILD: a function that works like \"docker build\" but is" \
+      "                 displayed during the generation process" \
+      "  These can be useful when composing dockerfile code.  For example," \
+      "  say that you install some package that extends \".bashrc\" with some" \
+      "  environment variables which you want to add to the dockerfile" \
+      "  (.bashrc is used in interactive bash runs only) -- you can add a" \
+      "  #BUILD# step after the installation, then add:" "" \
+      "    #META# R() { docker run --rm -h foo \$BUILDXTAG bash -c \"\$*\"; }" \
+      "    #META# comm -13 <(R \"env\"|sort) <(R \". .bashrc; env\"|sort) |\\" \
+      "      sed -e 's/^\([^=]*\)=/ENV \1 /'" "" \
+      "* #METAMETA# command..." \
+      "  $NAME works by generating bash code and running the result," \
+      "  where META lines are commands that are inserted in the generated" \
+      "  code as fragments are running, and must produce plain dockerfile" \
+      "  code.  METAMETA lines are similar to META lines, except that they" \
+      "  are evaluated when the code is generated (at \"compile-time\")." \
+      "  They cannot be used to examine the built image since there is none," \
+      "  but whatever they output is re-processed by $NAME, so they can" \
+      "  produce annotated $NAME code (e.g., implement a proper" \
+      "  \"include\").  They have access to the same variables, but note that" \
+      "  the \$BUILDX variables refer to a file and a tag that do not exist," \
+      "  yet." "" \
+      "The parsing of meta-annotations respects line-continuations: they're" \
+      "ignored when following a backslashed-line, and they can contain" \
+      "multiple lines if the annotated line ends with a backslash.  Only the" \
+      "annotations listed above are recognized (matched in any case), others" \
+      "are left untouched (i.e., as comments) but this might change to throw" \
+      "an error in the future." \
+      "" \
+      "In addition to a few general docker-build-like options that are" \
+      "consumed by $NAME itself, you can specify additional flags that" \
+      "are added to various build steps.  These options are specified by meta" \
+      "flags that look like \"--when:\" (see below for the actual names)." \
+      "Options that follow such a flag are all collected for the specified" \
+      "step(s), up to the next meta flag or up to a meta-closing flag of" \
+      "\":--\".  The collected options are added in the order of appearance" \
+      "on the command line.  See below for a list of these.  Note: no" \
+      "checking of arguments are done, neither in the meta-flags nor in" \
+      "\"#BUILD#\" lines, they can even contain \";\" and other such" \
+      "characters." ""
+  fi
+  echo "Docker-like Basic Options:"
+  echo "  -h, --help        get more help"
+  echo "  -f, --file <file> dockerfile name (default: \"<path>/Dockerfile\")"
+  echo "  -t, --tag <tag>   shorthand for --tag in the --last: section"
+  echo "Additional Options:"
+  echo "  -F, --buildx-file <file>"
+  echo "                    temp dockerfile (default: \"<dockerfile>x\")"
+  if ((all)); then echos -pfx "                    " \
+    "This file is created with dockerfile fragments" \
+    "for each build step, the default is the same as" \
+    "the docker file with an appended \"x\"."
+  fi
+  echo "  -T, --buildx-tag <tag>"
+  echo "                    temp tag used in intermediate builds"
+  if ((all)); then echos -pfx "                    " \
+    "This tag is deleted at the end of the build," \
+    "defaults to \"0buildx-temp\"."
+  fi
+  echo "  -X, --x-force     ignore existing buildx-file or buildx-tag"
+  echo "  -S, --script      dump the script that does the actual work"
+  if ((all)); then echos -pfx "                    " \
+    "You can use this flag to save the code to" \
+    "run yourself later, or to debug it."
+  fi
+  echo -n "Meta-options for"
+  if ((all)); then echo ":"; else echo " (--help for more info):"; fi
+  echo "  --all:     all builds"
+  echo "  --first:   first build"
+  echo "  --last:    last build (note: a single build step is considered last)"
+  echo "  --middle:  non-first-or-last builds"
+  echo "  :--        back to $NAME options"
+  if ((!all)); then echo "Use --help for full details."; fi
+  exit 0
+}
+
+meta_args=() rest_args=()
+parse_args() { # options...
+  local mode="" a="" next=""
+  while [[ "$#" -gt 0 || "$next" != "" ]]; do
+    if [[ "$next" == "" ]]; then a="$1"; shift; else a="$next"; next=""; fi
+    case "$a" in
+      ( ":--"       ) mode="" ;;
+      ( "--all:"    ) mode="111" ;;
+      ( "--first:"  ) mode="100" ;;
+      ( "--last:"   ) mode="001" ;;
+      ( "--middle:" ) mode="010" ;;
+      ( "--"*":"    ) fail -h "unknown meta-flag \"$a\"" ;;
+      ( * ) if [[ "$mode" != "" ]]; then meta_args+=("$mode:$a"); else
+        case "$a" in
+          ( "--help"       | "-h"* ) usage y ;;
+          ( "--file"        | "-f" ) FILE="$1"; shift ;;
+          ( "--file="*             ) FILE="${a#*=}" ;;
+          ( "-f"?*                 ) FILE="${a:2}" ;;
+          ( "--buildx-file" | "-F" ) FILEx="$1"; shift ;;
+          ( "--buildx-file="*      ) FILEx="${a#*=}" ;;
+          ( "-F"?*                 ) FILEx="${a:2}" ;;
+          ( "--tag"         | "-t" ) meta_args+=("001:--tag" "001:$1"); shift ;;
+          ( "--tag="*              ) meta_args+=("001:--tag" "001:${a#*=}") ;;
+          ( "-t"?*                 ) meta_args+=("001:--tag" "001:${a:2}") ;;
+          ( "--buildx-tag"  | "-T" ) TAGx="$1"; shift ;;
+          ( "--buildx-tag="*       ) TAGx="${a#*=}" ;;
+          ( "-T"?*                 ) TAGx="${a:2}" ;;
+          ( "--x-force"     | "-X" ) FORCE_MODE=1 ;;
+          ( "--x-force="*          ) fail -h "--x-force takes no arguments" ;;
+          ( "-X"?*                 ) FORCE_MODE=1; next="-${a:2}" ;;
+          ( "--script"      | "-S" ) SCRIPT_MODE=1 ;;
+          ( "--script="*           ) fail -h "--script takes no arguments" ;;
+          ( "-S"?*                 ) SCRIPT_MODE=1; next="-${a:2}" ;;
+          ( "--"* ) fail -h "unknown option: $a"       ;;
+          ( "-"*  ) fail -h "unknown option: ${a:0:2}" ;;
+          ( *     ) rest_args+=("$a") ;;
+        esac; fi ;;
+    esac
+  done
+}
+
+frag_num=0
+args_br=$' \\\n  '
+meta_re="^#(BUILD|SQUASH|INCLUDE|META(META)?)# *(.*)\$"
+dirv="DOCKERDIR"    qdirv="\"\$$dirv\""
+filev="DOCKERFILE"  qfilev="\"\$$filev\""
+xfilev="BUILDXFILE" qxfilev="\"\$$xfilev\""
+xtagv="BUILDXTAG"   qxtagv="\"\$$xtagv\""
+
+preamble() { # runtime (0 => called for a METAMETA block)
+  local runtime=$1; shift 2
+  local exports="export"
+  exports+=" $dirv=$(qstr "$DIR")"
+  exports+=" $filev=$(qstr "$FILE")"
+  exports+=" $xfilev=$(qstr "$FILEx")"
+  exports+=" $xtagv=$(qstr "$TAGx")"
+  if ((!runtime)); then echo "$exports"; return; fi
+  echos "#!/usr/bin/env bash" \
+        "" \
+        "$exports" \
+        "DOCKERBUILD() {" \
+        "  echo \"BUILDX---> docker build \$*\"" \
+        "  docker build \"\$@\" || exit \$?; }" \
+        "" \
+        "if [[ ! \"\$(docker version)\" =~ .*Experimental:\\ *true.* ]]; then" \
+        "  echo \"Warning: docker experimental mode is off\" 1>&2; fi"
+  if ((!FORCE_MODE)); then
+    echos "if [[ \"\$(docker images -q $qxtagv)\" != \"\" ]]; then" \
+          "  echo \"Error: temp tag exists: \$$xtagv\" 1>&2; exit 1; fi"
+  fi
+}
+
+fragment_start() { # no arguments
+  echo ""
+  if ((frag_num)); then printf "\necho \"\"\n"; fi
+  echo "echo \"################ >>> building fragment #$((++frag_num))" \
+       "<<< ################\""
+  echo "echo -n > $qxfilev"
+  if ((frag_num > 1)); then echo "echo \"FROM \$$xtagv\" >> $qxfilev"; fi
+}
+fragment_end() { # posn(0/1/2) args_str
+  local posn="$1" args_str="$2" arg has_args=0; shift 2
+  printf "\nDOCKERBUILD"
+  for arg in "${meta_args[@]}"; do
+    if [[ "${arg:$posn:1}" != "1" ]]; then continue; fi
+    if ((!has_args)); then has_args=1; printf "$args_br"; else printf " "; fi
+    printf "%q" "${arg:4}"
+  done
+  if [[ "x$args_str" != "x" ]]; then printf "%s%s" "$args_br" "$args_str"; fi
+  printf "\nrm -f $qxfilev\n"
+}
+add_chunk() { # chunk type
+  local chunk="$1" type="$2" marker="EOF"; shift 2
+  if [[ "x$chunk" == "x" ]]; then return; fi
+  if [[ "$type" == "META" ]]; then
+    echo "{"
+    printf "%s" "  $chunk"
+    echo "} >> $qxfilev || exit \$?"
+  else
+    while [[ "$chunk" == *"$marker"* ]]; do marker="EOF_$RANDOM"; done
+    echo "cat >> $qxfilev <<\"$marker\""
+    printf "%s" "$chunk"
+    echo "$marker"
+  fi
+}
+
+generate_script() { # no arguments, only globals
+  local line more ltype chunk="" ctype="-" posn=0 oIFS="$IFS"
+  local ocase="$(shopt -p nocasematch)"
+  preamble 1
+  IFS=""; shopt -s nocasematch
+  fragment_start
+  local fd inpstack=()
+  exec {fd}< "$FILE"
+  while ((1)); do
+    if read -u $fd -r line; then :
+    elif [[ ${#inpstack[@]} == 0 ]]; then break
+    else exec {fd}<&-; fd=${inpstack[-1]}; FILE="${inpstack[-2]}"
+         unset inpstack[-1]; unset inpstack[-1]; continue
+    fi
+    more="$line"
+    while is_cont "$more" && read -u $fd -r more; do line+=$'\n'"$more"; done
+    if [[ ! "$line" =~ $meta_re ]]; then ltype="-"; more="$line"
+    else ltype="${BASH_REMATCH[1]}"; more="${BASH_REMATCH[3]}"
+    fi
+    case "$ltype" in
+    ( "BUILD" | "SQUASH" )
+      add_chunk "$chunk" "$ctype"; chunk=""; ctype="-"
+      more="$(trim -r "$more")"
+      if [[ "$ltype" == "SQUASH" ]]; then more="--squash${more:+ }$more"; fi
+      more+="${more:+$args_br}--tag $qxtagv --file $qxfilev $qdirv"
+      fragment_end $posn "$more"; posn=1
+      fragment_start
+      ;;
+    ( "INCLUDE" )
+      local files=() here="$(dirname "$FILE")" i
+      local oldopts="$(shopt -p nocasematch globstar extglob nullglob)"
+      shopt -u nocasematch; shopt -s nullglob globstar extglob
+      eval "files=( $more ); $oldopts"
+      if [[ ${#files[@]} == 0 ]]; then continue; fi
+      for ((i = 0; i < ${#files[@]}; i++)); do
+        files[i]="$(realpath -m --relative-to "$PWD" "$here/${files[i]}")";
+        if [[ ! -r "${files[i]}" ]]; then
+          echo "Warning: cannot read include file: ${files[i]}" 1>&2
+          unset files[i]
+        fi
+      done
+      if [[ ${#files[@]} == 0 ]]; then continue; fi
+      for ((i = ${#files[@]}-1; i >= 0; i--)); do
+        if [[ "x${files[i]}" == "x" ]]; then continue; fi
+        inpstack+=("$FILE" $fd)
+        FILE="${files[i]}"; exec {fd}< "${files[i]}"
+      done
+      ;;
+    ( "METAMETA" )
+      inpstack+=("$FILE" $fd)
+      exec {fd}<<<"$(eval "$(preamble 0); $more")"
+      ;;
+    ( "$ctype" )
+      if [[ "$ltype" == "META" ]]; then chunk+="  "; fi
+      chunk+="$more"$'\n'
+      ;;
+    ( * )
+      add_chunk "$chunk" "$ctype"; chunk="$more"$'\n'; ctype="$ltype"
+    esac
+  done
+  add_chunk "$chunk" "$ctype"
+  fragment_end 2 "--file $qxfilev $qdirv"
+  if ((posn > 0)); then printf "\ndocker rmi %s\n" "$qxtagv"; fi
+  IFS="$oIFS"; eval "$ocase"
+}
+
+main() { # path
+  if [[ "x$1" == "x" ]]; then fail -h "missing <path> argument"; fi
+  DIR="$1"; shift
+  if [[ "$#" -gt 0  ]]; then fail -h "too many arguments: $*"
+  elif [[ ! -d "$DIR" ]]; then fail "directory does not exist: $DIR"
+  fi
+  if [[ "x$FILE"  == "x" ]]; then FILE="$DIR/Dockerfile"; FILE="${FILE#./}"; fi
+  if [[ "x$FILEx" == "x" ]]; then FILEx="${FILE}x"; fi
+  if [[ "x$TAGx"  == "x" ]]; then TAGx="0buildx-temp"; fi
+  if [[ ! -f "$FILE" ]]; then fail "dockerfile not found: $FILE"; fi
+  if ((!FORCE_MODE)) && [[ -f "$FILEx"  ]]; then
+    fail "generated dockerfile exists: $FILEx"
+  fi
+  if ((SCRIPT_MODE)); then generate_script; else eval "$(generate_script)"; fi
+}
+
+parse_args "$@"
+main "${rest_args[@]}"

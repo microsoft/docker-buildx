@@ -1,0 +1,33 @@
+Metameta, including nesting three levels.
+
+<line1
+<#METAMETA# echo 1 $DOCKERDIR $DOCKERFILE
+<#METAMETA# echo "#METAMETA# echo \"2 \$DOCKERDIR \$DOCKERFILE\""
+<#METAMETA# echo "#METAMETA# echo \"#METAMETA# echo \\\"3 \\\$DOCKERDIR \\\$DOCKERFILE\\\"\""
+<line2
+
+>#!/usr/bin/env bash
+>
+>export DOCKERDIR="." DOCKERFILE="Dockerfile" BUILDXFILE="Dockerfilex" BUILDXTAG="0buildx-temp"
+>DOCKERBUILD() {
+>  echo "BUILDX---> docker build $*"
+>  docker build "$@" || exit $?; }
+>
+>if [[ ! "$(docker version)" =~ .*Experimental:\ *true.* ]]; then
+>  echo "Warning: docker experimental mode is off" 1>&2; fi
+>if [[ "$(docker images -q "$BUILDXTAG")" != "" ]]; then
+>  echo "Error: temp tag exists: $BUILDXTAG" 1>&2; exit 1; fi
+>
+>echo "################ >>> building fragment #1 <<< ################"
+>echo -n > "$BUILDXFILE"
+>cat >> "$BUILDXFILE" <<"EOF"
+>line1
+>1 . Dockerfile
+>2 . Dockerfile
+>3 . Dockerfile
+>line2
+>EOF
+>
+>DOCKERBUILD \
+>  --file "$BUILDXFILE" "$DOCKERDIR"
+>rm -f "$BUILDXFILE"

@@ -1,0 +1,80 @@
+Meta options.
+
+;--first: A1 A2 --last: Z1 Z2 --middle: M1 M2 --all: 1 2 :-- -t blah --first: A3
+
+<line1
+<#BUILD#
+<line2
+<#BUILD# more args
+<line3
+<#SQUASH#
+<line4
+
+>#!/usr/bin/env bash
+>
+>export DOCKERDIR="." DOCKERFILE="Dockerfile" BUILDXFILE="Dockerfilex" BUILDXTAG="0buildx-temp"
+>DOCKERBUILD() {
+>  echo "BUILDX---> docker build $*"
+>  docker build "$@" || exit $?; }
+>
+>if [[ ! "$(docker version)" =~ .*Experimental:\ *true.* ]]; then
+>  echo "Warning: docker experimental mode is off" 1>&2; fi
+>if [[ "$(docker images -q "$BUILDXTAG")" != "" ]]; then
+>  echo "Error: temp tag exists: $BUILDXTAG" 1>&2; exit 1; fi
+>
+>echo "################ >>> building fragment #1 <<< ################"
+>echo -n > "$BUILDXFILE"
+>cat >> "$BUILDXFILE" <<"EOF"
+>line1
+>EOF
+>
+>DOCKERBUILD \
+>  A1 A2 1 2 A3 \
+>  --tag "$BUILDXTAG" --file "$BUILDXFILE" "$DOCKERDIR"
+>rm -f "$BUILDXFILE"
+>
+>
+>echo ""
+>echo "################ >>> building fragment #2 <<< ################"
+>echo -n > "$BUILDXFILE"
+>echo "FROM $BUILDXTAG" >> "$BUILDXFILE"
+>cat >> "$BUILDXFILE" <<"EOF"
+>line2
+>EOF
+>
+>DOCKERBUILD \
+>  M1 M2 1 2 \
+>  more args \
+>  --tag "$BUILDXTAG" --file "$BUILDXFILE" "$DOCKERDIR"
+>rm -f "$BUILDXFILE"
+>
+>
+>echo ""
+>echo "################ >>> building fragment #3 <<< ################"
+>echo -n > "$BUILDXFILE"
+>echo "FROM $BUILDXTAG" >> "$BUILDXFILE"
+>cat >> "$BUILDXFILE" <<"EOF"
+>line3
+>EOF
+>
+>DOCKERBUILD \
+>  M1 M2 1 2 \
+>  --squash \
+>  --tag "$BUILDXTAG" --file "$BUILDXFILE" "$DOCKERDIR"
+>rm -f "$BUILDXFILE"
+>
+>
+>echo ""
+>echo "################ >>> building fragment #4 <<< ################"
+>echo -n > "$BUILDXFILE"
+>echo "FROM $BUILDXTAG" >> "$BUILDXFILE"
+>cat >> "$BUILDXFILE" <<"EOF"
+>line4
+>EOF
+>
+>DOCKERBUILD \
+>  Z1 Z2 1 2 --tag blah \
+>  --file "$BUILDXFILE" "$DOCKERDIR"
+>rm -f "$BUILDXFILE"
+>
+>docker rmi "$BUILDXTAG"

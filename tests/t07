@@ -1,0 +1,85 @@
+Parsing meta annotations.
+
+<line1 \
+<#BUILD#
+<line2 \\\
+<#BUILD#
+<line3 \ \\
+<#BUILD#A \
+<  B
+<line4 EOF
+<#BLAH#
+<line5
+<#SQUASH# C \
+<    D \\\
+<  E \\\\\
+<  F
+<#BLAH# \
+<#BUILD#
+<line6
+<  line7
+
+>#!/usr/bin/env bash
+>
+>export DOCKERDIR="." DOCKERFILE="Dockerfile" BUILDXFILE="Dockerfilex" BUILDXTAG="0buildx-temp"
+>DOCKERBUILD() {
+>  echo "BUILDX---> docker build $*"
+>  docker build "$@" || exit $?; }
+>
+>if [[ ! "$(docker version)" =~ .*Experimental:\ *true.* ]]; then
+>  echo "Warning: docker experimental mode is off" 1>&2; fi
+>if [[ "$(docker images -q "$BUILDXTAG")" != "" ]]; then
+>  echo "Error: temp tag exists: $BUILDXTAG" 1>&2; exit 1; fi
+>
+>echo "################ >>> building fragment #1 <<< ################"
+>echo -n > "$BUILDXFILE"
+>cat >> "$BUILDXFILE" <<"EOF"
+>line1 \
+>#BUILD#
+>line2 \\\
+>#BUILD#
+>line3 \ \\
+>EOF
+>
+>DOCKERBUILD \
+>  A \
+>  B \
+>  --tag "$BUILDXTAG" --file "$BUILDXFILE" "$DOCKERDIR"
+>rm -f "$BUILDXFILE"
+>
+>
+>echo ""
+>echo "################ >>> building fragment #2 <<< ################"
+>echo -n > "$BUILDXFILE"
+>echo "FROM $BUILDXTAG" >> "$BUILDXFILE"
+>cat >> "$BUILDXFILE" <<"EOF_[...]"
+>line4 EOF
+>#BLAH#
+>line5
+>EOF_[...]
+>
+>DOCKERBUILD \
+>  --squash C \
+>    D \\\
+>  E \\\\\
+>  F \
+>  --tag "$BUILDXTAG" --file "$BUILDXFILE" "$DOCKERDIR"
+>rm -f "$BUILDXFILE"
+>
+>
+>echo ""
+>echo "################ >>> building fragment #3 <<< ################"
+>echo -n > "$BUILDXFILE"
+>echo "FROM $BUILDXTAG" >> "$BUILDXFILE"
+>cat >> "$BUILDXFILE" <<"EOF"
+>#BLAH# \
+>#BUILD#
+>line6
+>  line7
+>EOF
+>
+>DOCKERBUILD \
+>  --file "$BUILDXFILE" "$DOCKERDIR"
+>rm -f "$BUILDXFILE"
+>
+>docker rmi "$BUILDXTAG"

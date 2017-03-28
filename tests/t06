@@ -1,0 +1,28 @@
+A single build is considered last.
+
+;--first: A1 A2 --last: Z1 Z2 --middle: M1 M2 --all: 1 2 :-- -t blah --first: A3
+
+<FROM foo
+
+>#!/usr/bin/env bash
+>
+>export DOCKERDIR="." DOCKERFILE="Dockerfile" BUILDXFILE="Dockerfilex" BUILDXTAG="0buildx-temp"
+>DOCKERBUILD() {
+>  echo "BUILDX---> docker build $*"
+>  docker build "$@" || exit $?; }
+>
+>if [[ ! "$(docker version)" =~ .*Experimental:\ *true.* ]]; then
+>  echo "Warning: docker experimental mode is off" 1>&2; fi
+>if [[ "$(docker images -q "$BUILDXTAG")" != "" ]]; then
+>  echo "Error: temp tag exists: $BUILDXTAG" 1>&2; exit 1; fi
+>
+>echo "################ >>> building fragment #1 <<< ################"
+>echo -n > "$BUILDXFILE"
+>cat >> "$BUILDXFILE" <<"EOF"
+>FROM foo
+>EOF
+>
+>DOCKERBUILD \
+>  Z1 Z2 1 2 --tag blah \
+>  --file "$BUILDXFILE" "$DOCKERDIR"
+>rm -f "$BUILDXFILE"
