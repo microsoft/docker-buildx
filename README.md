@@ -134,6 +134,8 @@ characters.
   dump the script that does the actual work \
   You can use this flag to save the code to
   run yourself later, or to debug it.
+* `-V`, `--version`:
+  show the `docker-buildx` version
 
 ### Meta-options for:
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 NAME="$(basename $0)"
+VERSION=0.0.1
 DIR="."  FILE="" # dockerfile path & file
 FILEx="" TAGx="" # dockerfile for fragments, tag for intermediate steps
 SCRIPT_MODE=0
@@ -158,6 +159,7 @@ usage() { # show_all
     "You can use this flag to save the code to" \
     "run yourself later, or to debug it."
   fi
+  echo "  -V, --version     show the $NAME version"
   echo -n "Meta-options for"
   if ((all)); then echo ":"; else echo " (--help for more info):"; fi
   echo "  --all:     all builds"
@@ -183,7 +185,8 @@ parse_args() { # options...
       ( "--"*":"    ) fail -h "unknown meta-flag \"$a\"" ;;
       ( * ) if [[ "$mode" != "" ]]; then meta_args+=("$mode:$a"); else
         case "$a" in
-          ( "--help"       | "-h"* ) usage y ;;
+          ( "--help"    | "--help="*    | "-h"* ) usage y ;;
+          ( "--version" | "--version="* | "-V"* ) echo "$VERSION"; exit ;;
           ( "--file"        | "-f" ) FILE="$1"; shift ;;
           ( "--file="*             ) FILE="${a#*=}" ;;
           ( "-f"?*                 ) FILE="${a:2}" ;;
